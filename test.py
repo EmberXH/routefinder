@@ -30,7 +30,7 @@ def test(
     policy,
     td,
     env,
-    num_augment=8,
+    num_augment=1,
     augment_fn="dihedral8",  # or symmetric. Default is dihedral8 for reported eval
     num_starts=None,
     device="cuda",
