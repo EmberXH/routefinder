@@ -285,7 +285,7 @@ class DecodingStrategy(metaclass=abc.ABCMeta):
         self, td: TensorDict, env: RL4COEnvBase, action: torch.Tensor = None
     ):
         """Pre decoding hook. This method is called before the main decoding operation."""
-
+        self.multistart = False
         # Multi-start decoding. If num_starts is None, we use the number of actions in the action mask
         if self.multistart or self.multisample:
             if self.num_starts is None:

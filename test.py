@@ -124,7 +124,7 @@ if __name__ == "__main__":
         help="Filename of the dataset(s) to evaluate. Defaults to all under data/{problem}/ dir",
         default=None,
     )
-    parser.add_argument("--batch_size", type=int, default=1000)
+    parser.add_argument("--batch_size", type=int, default=1)  # 原为1000
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
         "--remove-mixed-backhaul",
