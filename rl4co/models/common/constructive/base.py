@@ -167,6 +167,7 @@ class ConstructivePolicy(nn.Module):
         return_sum_log_likelihood: bool = True,
         actions=None,
         max_steps=1_000_000,
+        partial = None,
         **decoding_kwargs,
     ) -> dict:
         """Forward pass of the policy.
@@ -226,6 +227,8 @@ class ConstructivePolicy(nn.Module):
 
         # Main decoding: loop until all sequences are done
         step = 0
+        veh_i = 0
+        traj = []
         while not td["done"].all():
             logits, mask = self.decoder(td, hidden, num_starts)
             td = decode_strategy.step(
@@ -235,13 +238,16 @@ class ConstructivePolicy(nn.Module):
                 action=actions[..., step] if actions is not None else None,
             )
             td = env.step(td)["next"]
+            traj.append((float(td["current_time"].item()), veh_i, int(td["current_node"].item())))
+            if td["current_node"]==0:
+                veh_i+=1
             step += 1
             if step > max_steps:
                 log.error(
                     f"Exceeded maximum number of steps ({max_steps}) duing decoding"
                 )
                 break
-
+        traj.sort()
         # Post-decoding hook: used for the final step(s) of the decoding strategy
         logprobs, actions, td, env = decode_strategy.post_decoder_hook(td, env)
 

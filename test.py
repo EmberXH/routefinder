@@ -16,6 +16,8 @@ from routefinder.models import RouteFinderBase, RouteFinderMoE
 from routefinder.models.baselines.mtpomo import MTPOMO
 from routefinder.models.baselines.mvmoe import MVMoE
 
+import progressbar
+
 # Tricks for faster inference
 try:
     torch._C._jit_set_profiling_executor(False)
@@ -45,15 +47,18 @@ def test(
             else torch.inference_mode()
         ):  # Use mixed precision if supported
             n_start = env.get_num_starts(td) if num_starts is None else num_starts
+            if num_augment==1:  # add
+                n_start = 1
 
             if num_augment > 1:
                 td = StateAugmentation(num_augment=num_augment, augment_fn=augment_fn)(td)
 
             # Evaluate policy
-            out = policy(td, env, phase="test", num_starts=n_start, return_actions=True)
+            out = policy(td, env, phase="test", num_starts=n_start, return_actions=True, partial=1)
 
             # Unbatchify reward to [batch_size, num_augment, num_starts].
-            reward = unbatchify(out["reward"], (num_augment, n_start))
+            if out["reward"].dim() != 1:
+                reward = unbatchify(out["reward"], (num_augment, n_start))
 
             if n_start > 1:
                 # max multi-start reward
@@ -190,7 +195,7 @@ if __name__ == "__main__":
     policy = model.policy.to(device).eval()  # Use mixed precision if supported
 
     results = {}
-    for dataset in tqdm(data_paths):
+    for dataset in data_paths:
 
         print(f"Loading {dataset}")
         td_test = env.load_data(dataset)  # this also adds the bks cost
@@ -198,30 +203,33 @@ if __name__ == "__main__":
 
         start = time.time()
         res = []
-        for batch in dataloader:
+        for batch in tqdm(dataloader):
             td_test = env.reset(batch).to(device)
             o = test(policy, td_test, env, device=device)
             res.append(o)
         out = {}
-        out["max_aug_reward"] = torch.cat([o["max_aug_reward"] for o in res])
-        out["gap_to_bks"] = torch.cat([o["gap_to_bks"] for o in res])
-            
-        inference_time = time.time() - start
+        if "max_aug_reward" not in res[0].keys():
+            print(f"AVG COST: {-torch.stack([item['reward'] for item in res]).sum()/len(res)}")
+        else:
+            out["max_aug_reward"] = torch.cat([o["max_aug_reward"] for o in res])
+            out["gap_to_bks"] = torch.cat([o["gap_to_bks"] for o in res])
 
-        dataset_name = dataset.split("/")[-3].split(".")[0].upper()
-        print(
-            f"{dataset_name} | Cost: {-out['max_aug_reward'].mean().item():.3f} | Gap: {out['gap_to_bks'].mean().item():.3f}% | Inference time: {inference_time:.3f} s"
-        )
+            inference_time = time.time() - start
 
-        if results.get(dataset_name, None) is None:
-            results[dataset_name] = {}
-        results[dataset_name]["cost"] = -out["max_aug_reward"].mean().item()
-        results[dataset_name]["gap"] = out["gap_to_bks"].mean().item()
-        results[dataset_name]["inference_time"] = inference_time
+            dataset_name = dataset.split("/")[-3].split(".")[0].upper()
+            print(
+                f"{dataset_name} | Cost: {-out['max_aug_reward'].mean().item():.3f} | Gap: {out['gap_to_bks'].mean().item():.3f}% | Inference time: {inference_time:.3f} s"
+            )
 
-    if opts.save_results:
-        # Save results with checkpoint name under results/main/
-        checkpoint_name = opts.checkpoint.split("/")[-1].split(".")[0]
-        savedir = f"results/main/{opts.size}/"
-        os.makedirs(savedir, exist_ok=True)
-        pickle.dump(results, open(savedir + checkpoint_name + ".pkl", "wb"))
+            if results.get(dataset_name, None) is None:
+                results[dataset_name] = {}
+            results[dataset_name]["cost"] = -out["max_aug_reward"].mean().item()
+            results[dataset_name]["gap"] = out["gap_to_bks"].mean().item()
+            results[dataset_name]["inference_time"] = inference_time
+
+        if opts.save_results:
+            # Save results with checkpoint name under results/main/
+            checkpoint_name = opts.checkpoint.split("/")[-1].split(".")[0]
+            savedir = f"results/main/{opts.size}/"
+            os.makedirs(savedir, exist_ok=True)
+            pickle.dump(results, open(savedir + checkpoint_name + ".pkl", "wb"))
