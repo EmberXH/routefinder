@@ -15,6 +15,7 @@ from rl4co.utils.decoding import (
 )
 from rl4co.utils.ops import calculate_entropy
 from rl4co.utils.pylogger import get_pylogger
+import torch
 
 log = get_pylogger(__name__)
 
@@ -42,7 +43,7 @@ class ConstructiveDecoder(nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def forward(
-        self, td: TensorDict, hidden: Any = None, num_starts: int = 0
+            self, td: TensorDict, hidden: Any = None, num_starts: int = 0
     ) -> Tuple[Tensor, Tensor]:
         """Obtain logits for current action to the next ones
 
@@ -57,7 +58,7 @@ class ConstructiveDecoder(nn.Module, metaclass=abc.ABCMeta):
         raise NotImplementedError("Implement me in subclass!")
 
     def pre_decoder_hook(
-        self, td: TensorDict, env: RL4COEnvBase, hidden: Any = None, num_starts: int = 0
+            self, td: TensorDict, env: RL4COEnvBase, hidden: Any = None, num_starts: int = 0
     ) -> Tuple[TensorDict, Any, RL4COEnvBase]:
         """By default, we don't need to do anything here.
 
@@ -120,17 +121,17 @@ class ConstructivePolicy(nn.Module):
     """
 
     def __init__(
-        self,
-        encoder: Union[ConstructiveEncoder, Callable],
-        decoder: Union[ConstructiveDecoder, Callable],
-        env_name: str = "tsp",
-        temperature: float = 1.0,
-        tanh_clipping: float = 0,
-        mask_logits: bool = True,
-        train_decode_type: str = "sampling",
-        val_decode_type: str = "greedy",
-        test_decode_type: str = "greedy",
-        **unused_kw,
+            self,
+            encoder: Union[ConstructiveEncoder, Callable],
+            decoder: Union[ConstructiveDecoder, Callable],
+            env_name: str = "tsp",
+            temperature: float = 1.0,
+            tanh_clipping: float = 0,
+            mask_logits: bool = True,
+            train_decode_type: str = "sampling",
+            val_decode_type: str = "greedy",
+            test_decode_type: str = "greedy",
+            **unused_kw,
     ):
         super(ConstructivePolicy, self).__init__()
 
@@ -155,21 +156,21 @@ class ConstructivePolicy(nn.Module):
         self.test_decode_type = test_decode_type
 
     def forward(
-        self,
-        td: TensorDict,
-        env: Optional[Union[str, RL4COEnvBase]] = None,
-        phase: str = "train",
-        calc_reward: bool = True,
-        return_actions: bool = True,
-        return_entropy: bool = False,
-        return_hidden: bool = False,
-        return_init_embeds: bool = False,
-        return_sum_log_likelihood: bool = True,
-        actions=None,
-        max_steps=1_000_000,
-        partial = None,
-        **decoding_kwargs,
-    ) -> dict:
+            self,
+            td: TensorDict,
+            env: Optional[Union[str, RL4COEnvBase]] = None,
+            phase: str = "train",
+            calc_reward: bool = True,
+            return_actions: bool = True,
+            return_entropy: bool = False,
+            return_hidden: bool = False,
+            return_init_embeds: bool = False,
+            return_sum_log_likelihood: bool = True,
+            actions=None,
+            max_steps=1_000_000,
+            partial=None,
+            **decoding_kwargs,
+    ):
         """Forward pass of the policy.
 
         Args:
@@ -229,18 +230,53 @@ class ConstructivePolicy(nn.Module):
         step = 0
         veh_i = 0
         traj = []
+        fix_flag = False
+        fix_route_idx = -1
         while not td["done"].all():
+            if td['current_node'] == 0 and partial:
+                for idx, sublist in enumerate(partial):
+                    if sublist:
+                        fix_route_idx = idx
+                        break
+                if fix_route_idx != -1 and len(partial[fix_route_idx]) != 0:
+                    fix_flag = True
+            # VB
+            if fix_flag and len(partial[fix_route_idx]) == 0 and 'b_happen' in td.keys() and td[
+                'b_happen'] and 'b_veh_idx' in td.keys() and td[
+                'b_veh_idx'] == fix_route_idx:
+                td["current_node"][0] = 0
+
             logits, mask = self.decoder(td, hidden, num_starts)
+
+            # NR QC
+            if 'dyn_cust_mask' in td.keys():
+                mask = mask & td['dyn_cust_mask']
+            if torch.all(~mask):
+                if td['current_node'] == 0:
+                    break
+                else:
+                    mask[0][0] = True
+            # 通过控制mask固定选择
+            if fix_flag:
+                if len(partial[fix_route_idx]) == 0:
+                    fix_flag = False
+                else:
+                    fix_node_idx = partial[fix_route_idx].pop(0)
+                    mask[:, :] = False
+                    mask[:, fix_node_idx] = True
+
             td = decode_strategy.step(
                 logits,
                 mask,
                 td,
                 action=actions[..., step] if actions is not None else None,
             )
-            td = env.step(td)["next"]
+            td = env.step(td)["next"]  # 改变action_mask
             traj.append((float(td["current_time"].item()), veh_i, int(td["current_node"].item())))
-            if td["current_node"]==0:
-                veh_i+=1
+            if td["current_node"] == 0:
+                if torch.all(td['action_mask'][0, 1:] == False):
+                    break
+                veh_i += 1
             step += 1
             if step > max_steps:
                 log.error(
@@ -261,7 +297,9 @@ class ConstructivePolicy(nn.Module):
                 logprobs, actions, td.get("mask", None), return_sum_log_likelihood
             ),
         }
-
+        outdict["veh_num"] = torch.tensor([[veh_i + 1]])
+        # 服务率
+        outdict["serv_rate"] = torch.tensor([[td['visited'][0, 1:].sum().item() / td['visited'][0, 1:].numel()]])
         if return_actions:
             outdict["actions"] = actions
         if return_entropy:
@@ -271,4 +309,4 @@ class ConstructivePolicy(nn.Module):
         if return_init_embeds:
             outdict["init_embeds"] = init_embeds
 
-        return outdict
+        return outdict, traj

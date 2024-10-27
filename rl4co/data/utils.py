@@ -3,9 +3,11 @@ import os
 import numpy as np
 
 from tensordict.tensordict import TensorDict
-
+from marpdan.problems import *
+import torch
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_PATH = os.path.dirname(os.path.dirname(CURR_DIR))
+
 
 
 def load_npz_to_tensordict(filename):
@@ -18,6 +20,27 @@ def load_npz_to_tensordict(filename):
     batch_size = x_dict[list(x_dict.keys())[0]].shape[0]
     return TensorDict(x_dict, batch_size=batch_size)
 
+def load_pyth_to_tensordict(filename):
+    data = torch.load(filename)
+    x_dict = {}
+    x_dict['locs'] = data.nodes[:,:,:2]
+    x_dict['demand_linehaul']= data.nodes[:,1:,2]
+    x_dict['time_windows'] = data.nodes[:,:,3:5]
+    x_dict['service_time'] = data.nodes[:,:,5]
+    x_dict['vehicle_capacity'] = torch.ones((data.nodes.size(0), 1))
+    x_dict['speed'] = torch.full((data.nodes.size(0), 1), data.veh_speed)
+    x_dict['dyn_time'] = data.nodes[:,:,-1]
+    if type(data) == DVRPTW_QS_Dataset or type(data) == DVRPTW_QS_VB_Dataset:
+        x_dict['changed_dem'] = data.changed_dem
+    if type(data) == DVRPTW_VB_Dataset or type(data) == DVRPTW_QS_VB_Dataset:
+        x_dict['b_time'] = data.b_time
+        x_dict['b_veh_idx'] = data.b_veh_idx
+    if type(data) == DVRPTW_TJ_Dataset or type(data) == DVRPTW_NR_TJ_Dataset:
+        x_dict['distances_with_tj'] = data.distances_with_tj
+        x_dict['tj_time'] = data.tj_time
+    x_dict['problem_type'] = type(data).__name__
+    batch_size = data.nodes.size(0)
+    return TensorDict(x_dict, batch_size=batch_size)
 
 def save_tensordict_to_npz(tensordict, filename, compress: bool = False):
     """Save a TensorDict to a npz file

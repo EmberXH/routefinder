@@ -5,7 +5,7 @@ from typing import List, Optional, Union
 import numpy as np
 import torch
 
-from rl4co.data.utils import load_npz_to_tensordict
+from rl4co.data.utils import load_npz_to_tensordict, load_pyth_to_tensordict
 from rl4co.envs.common.base import RL4COEnvBase
 from rl4co.utils.ops import gather_by_index, get_distance
 from rl4co.utils.pylogger import get_pylogger
@@ -612,7 +612,10 @@ class MTVRPEnv(RL4COEnvBase):
 
     def load_data(self, fpath, batch_size=[]):
         """Dataset loading from file"""
-        td = load_npz_to_tensordict(fpath)
+        if fpath.endswith('.npz'):
+            td = load_npz_to_tensordict(fpath)
+        else:
+            td = load_pyth_to_tensordict(fpath)
         if self.load_solutions:
             # Load solutions if they exist depending on the file name
             solution_fpath = fpath.replace(".npz", self.solution_fname)

@@ -6,6 +6,9 @@
 *.pkl
 *.txt
 
+/dyn_data/
+*.pyth
+
 # Logs
 /logs
 
