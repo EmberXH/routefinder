@@ -27,6 +27,7 @@ except AttributeError:
 
 torch.set_float32_matmul_precision("medium")
 
+
 PROBLEM_TYPE = 'qs_vb'
 PROBLEM_SIZE = 100
 DEG_OF_DYNAS = [0.3, 0.4]  # 0.3 0.4 0.6

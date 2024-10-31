@@ -226,87 +226,131 @@ class ConstructivePolicy(nn.Module):
         # Additionally call a decoder hook if needed before main decoding
         td, env, hidden = self.decoder.pre_decoder_hook(td, env, hidden, num_starts)
 
-        # Main decoding: loop until all sequences are done
-        step = 0
-        veh_i = 0
-        traj = []
-        fix_flag = False
-        fix_route_idx = -1
-        while not td["done"].all():
-            if td['current_node'] == 0 and partial:
-                for idx, sublist in enumerate(partial):
-                    if sublist:
-                        fix_route_idx = idx
+        if phase == 'test':
+            # Main decoding: loop until all sequences are done
+            step = 0
+            veh_i = 0
+            traj = []
+            fix_flag = False
+            fix_route_idx = -1
+            while not td["done"].all():
+                if td['current_node'] == 0 and partial:
+                    for idx, sublist in enumerate(partial):
+                        if sublist:
+                            fix_route_idx = idx
+                            break
+                    if fix_route_idx != -1 and len(partial[fix_route_idx]) != 0:
+                        fix_flag = True
+                # VB
+                if fix_flag and len(partial[fix_route_idx]) == 0 and 'b_happen' in td.keys() and td[
+                    'b_happen'] and 'b_veh_idx' in td.keys() and td[
+                    'b_veh_idx'] == fix_route_idx:
+                    td["current_node"][0] = 0
+
+                logits, mask = self.decoder(td, hidden, num_starts)
+
+                # NR QC
+                if 'dyn_cust_mask' in td.keys():
+                    mask = mask & td['dyn_cust_mask']
+                if torch.all(~mask):
+                    if td['current_node'] == 0:
                         break
-                if fix_route_idx != -1 and len(partial[fix_route_idx]) != 0:
-                    fix_flag = True
-            # VB
-            if fix_flag and len(partial[fix_route_idx]) == 0 and 'b_happen' in td.keys() and td[
-                'b_happen'] and 'b_veh_idx' in td.keys() and td[
-                'b_veh_idx'] == fix_route_idx:
-                td["current_node"][0] = 0
+                    else:
+                        mask[0][0] = True
+                # 通过控制mask固定选择
+                if fix_flag:
+                    if len(partial[fix_route_idx]) == 0:
+                        fix_flag = False
+                    else:
+                        fix_node_idx = partial[fix_route_idx].pop(0)
+                        mask[:, :] = False
+                        mask[:, fix_node_idx] = True
 
-            logits, mask = self.decoder(td, hidden, num_starts)
-
-            # NR QC
-            if 'dyn_cust_mask' in td.keys():
-                mask = mask & td['dyn_cust_mask']
-            if torch.all(~mask):
-                if td['current_node'] == 0:
-                    break
-                else:
-                    mask[0][0] = True
-            # 通过控制mask固定选择
-            if fix_flag:
-                if len(partial[fix_route_idx]) == 0:
-                    fix_flag = False
-                else:
-                    fix_node_idx = partial[fix_route_idx].pop(0)
-                    mask[:, :] = False
-                    mask[:, fix_node_idx] = True
-
-            td = decode_strategy.step(
-                logits,
-                mask,
-                td,
-                action=actions[..., step] if actions is not None else None,
-            )
-            td = env.step(td)["next"]  # 改变action_mask
-            traj.append((float(td["current_time"].item()), veh_i, int(td["current_node"].item())))
-            if td["current_node"] == 0:
-                if torch.all(td['action_mask'][0, 1:] == False):
-                    break
-                veh_i += 1
-            step += 1
-            if step > max_steps:
-                log.error(
-                    f"Exceeded maximum number of steps ({max_steps}) duing decoding"
+                td = decode_strategy.step(
+                    logits,
+                    mask,
+                    td,
+                    action=actions[..., step] if actions is not None else None,
                 )
-                break
-        traj.sort()
-        # Post-decoding hook: used for the final step(s) of the decoding strategy
-        logprobs, actions, td, env = decode_strategy.post_decoder_hook(td, env)
+                td = env.step(td)["next"]  # 改变action_mask
+                traj.append((float(td["current_time"].item()), veh_i, int(td["current_node"].item())))
+                if td["current_node"] == 0:
+                    if torch.all(td['action_mask'][0, 1:] == False):
+                        break
+                    veh_i += 1
+                step += 1
+                if step > max_steps:
+                    log.error(
+                        f"Exceeded maximum number of steps ({max_steps}) duing decoding"
+                    )
+                    break
+            traj.sort()
+            # Post-decoding hook: used for the final step(s) of the decoding strategy
+            logprobs, actions, td, env = decode_strategy.post_decoder_hook(td, env)
 
-        # Output dictionary construction
-        if calc_reward:
-            td.set("reward", env.get_reward(td, actions))
+            # Output dictionary construction
+            if calc_reward:
+                td.set("reward", env.get_reward(td, actions))
 
-        outdict = {
-            "reward": td["reward"],
-            "log_likelihood": get_log_likelihood(
-                logprobs, actions, td.get("mask", None), return_sum_log_likelihood
-            ),
-        }
-        outdict["veh_num"] = torch.tensor([[veh_i + 1]])
-        # 服务率
-        outdict["serv_rate"] = torch.tensor([[td['visited'][0, 1:].sum().item() / td['visited'][0, 1:].numel()]])
-        if return_actions:
-            outdict["actions"] = actions
-        if return_entropy:
-            outdict["entropy"] = calculate_entropy(logprobs)
-        if return_hidden:
-            outdict["hidden"] = hidden
-        if return_init_embeds:
-            outdict["init_embeds"] = init_embeds
+            outdict = {
+                "reward": td["reward"],
+                "log_likelihood": get_log_likelihood(
+                    logprobs, actions, td.get("mask", None), return_sum_log_likelihood
+                ),
+            }
+            outdict["veh_num"] = torch.tensor([[veh_i + 1]])
+            # 服务率
+            outdict["serv_rate"] = torch.tensor([[td['visited'][0, 1:].sum().item() / td['visited'][0, 1:].numel()]])
+            if return_actions:
+                outdict["actions"] = actions
+            if return_entropy:
+                outdict["entropy"] = calculate_entropy(logprobs)
+            if return_hidden:
+                outdict["hidden"] = hidden
+            if return_init_embeds:
+                outdict["init_embeds"] = init_embeds
 
-        return outdict, traj
+            return outdict, traj
+        else:
+            # Main decoding: loop until all sequences are done
+            step = 0
+            while not td["done"].all():
+                logits, mask = self.decoder(td, hidden, num_starts)
+                td = decode_strategy.step(
+                    logits,
+                    mask,
+                    td,
+                    action=actions[..., step] if actions is not None else None,
+                )
+                td = env.step(td)["next"]
+                step += 1
+                if step > max_steps:
+                    log.error(
+                        f"Exceeded maximum number of steps ({max_steps}) duing decoding"
+                    )
+                    break
+
+            # Post-decoding hook: used for the final step(s) of the decoding strategy
+            logprobs, actions, td, env = decode_strategy.post_decoder_hook(td, env)
+
+            # Output dictionary construction
+            if calc_reward:
+                td.set("reward", env.get_reward(td, actions))
+
+            outdict = {
+                "reward": td["reward"],
+                "log_likelihood": get_log_likelihood(
+                    logprobs, actions, td.get("mask", None), return_sum_log_likelihood
+                ),
+            }
+
+            if return_actions:
+                outdict["actions"] = actions
+            if return_entropy:
+                outdict["entropy"] = calculate_entropy(logprobs)
+            if return_hidden:
+                outdict["hidden"] = hidden
+            if return_init_embeds:
+                outdict["init_embeds"] = init_embeds
+
+            return outdict
